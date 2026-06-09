@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Convertisseur Vidéo en Son (Champs Récepteurs - Stabilité Corrigée)</title>
+    <title>Convertisseur Vidéo en Son (Choix Caméra)</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -18,22 +18,36 @@
         }
         h1 { color: #ffffff; margin-bottom: 10px; }
         #container { position: relative; width: 640px; height: 480px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
-        video { display: none; }
+        video { display: none; } 
         canvas { border-radius: 8px; background-color: #000; width: 100%; height: 100%; }
-        button {
+        
+        /* Zone de contrôles */
+        .controls {
             margin-top: 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        button, select {
             padding: 12px 24px;
             font-size: 16px;
             font-weight: bold;
-            background-color: #00adb5;
-            color: white;
             border: none;
             border-radius: 25px;
+            background-color: #00adb5;
+            color: white;
             cursor: pointer;
             transition: background 0.3s;
+            outline: none;
         }
-        button:hover { background-color: #007880; }
-        #status { margin-top: 10px; font-style: italic; color: #888; }
+        button:hover, select:hover { background-color: #007880; }
+        select {
+            background-color: #222831;
+            border: 2px solid #00adb5;
+            appearance: none; /* Élimine le style par défaut sur mobile */
+            -webkit-appearance: none;
+        }
+        #status { margin-top: 15px; font-style: italic; color: #888; }
     </style>
 </head>
 <body>
@@ -43,7 +57,14 @@
         <video id="video" width="640" height="480" autoplay playsinline></video>
         <canvas id="canvas" width="640" height="480"></canvas>
     </div>
-    <button id="btn-start">Activer l'Audio et la Caméra</button>
+    
+    <div class="controls">
+        <select id="camera-select">
+            <option value="">Détection des caméras...</option>
+        </select>
+        <button id="btn-start">Activer l'Audio et la Caméra</button>
+    </div>
+    
     <div id="status">En attente de l'activation...</div>
 
 <script>
@@ -51,35 +72,63 @@ const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const btnStart = document.getElementById('btn-start');
+const cameraSelect = document.getElementById('camera-select');
 const statusDiv = document.getElementById('status');
 
 const WIDTH = 640;
 const HEIGHT = 480;
 const NUM_FIELDS = 200;
 const SENSORS_PER_FIELD = 10;
-const MAX_SENSOR_DISTANCE = 15;
-const PADDING = 20; // Marge de sécurité absolue pour éviter les bords de l'image
+const MAX_SENSOR_DISTANCE = 15; 
+const PADDING = 20; 
 
 let audioCtx = null;
 let fields = [];
 let isRunning = false;
+let currentStream = null;
+
+// --- NOUVEAU : Lister et peupler les caméras disponibles ---
+async function getCameras() {
+    try {
+        // Demande une première autorisation rapide pour débloquer les labels des caméras
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        // Libère immédiatement la caméra temporaire
+        tempStream.getTracks().forEach(track => track.stop());
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        
+        cameraSelect.innerHTML = ''; // Nettoyer les options
+        
+        videoDevices.forEach((device, index) => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            // Utilise le nom de la caméra (ex: "Caméra arrière"), sinon un nom générique
+            option.text = device.label || `Caméra ${index + 1}`;
+            cameraSelect.appendChild(option);
+        });
+
+        statusDiv.textContent = "Caméras détectées. Prêt à démarrer.";
+    } catch (err) {
+        console.error("Impossible de lister les caméras :", err);
+        statusDiv.textContent = "Autorisez l'accès pour lister les caméras disponibles.";
+    }
+}
+
+// Appeler la détection des caméras dès le chargement de la page
+getCameras();
 
 // --- 1. Génération de la structure des Champs Récepteurs ---
 function initFields() {
     fields = [];
-
-    // On définit le centre de la zone utile (hors bordures)
     const activeWidth = WIDTH - (PADDING * 2);
     const activeHeight = HEIGHT - (PADDING * 2);
     const centerX = PADDING + activeWidth / 2;
     const centerY = PADDING + activeHeight / 2;
-
-    // Le rayon maximal est calculé pour que même les capteurs déportés de MAX_SENSOR_DISTANCE
-    // ne puissent jamais dépasser la zone de PADDING.
     const maxRadius = Math.min(activeWidth, activeHeight) / 2 - MAX_SENSOR_DISTANCE;
 
     for (let i = 0; i < NUM_FIELDS; i++) {
-        const t = Math.pow(Math.random(), 2);
+        const t = Math.pow(Math.random(), 2); 
         const radius = t * maxRadius;
         const angle = Math.random() * Math.PI * 2;
 
@@ -93,8 +142,7 @@ function initFields() {
         for (let j = 0; j < SENSORS_PER_FIELD; j++) {
             const sAngle = Math.random() * Math.PI * 2;
             const sDist = Math.random() * MAX_SENSOR_DISTANCE;
-
-            // Placement strict des capteurs individuels à l'intérieur des limites de sécurité
+            
             const sx = Math.max(PADDING, Math.min(WIDTH - PADDING, Math.round(fx + Math.cos(sAngle) * sDist)));
             const sy = Math.max(PADDING, Math.min(HEIGHT - PADDING, Math.round(fy + Math.sin(sAngle) * sDist)));
 
@@ -106,7 +154,6 @@ function initFields() {
         const barycenterX = sumX / SENSORS_PER_FIELD;
         const barycenterY = sumY / SENSORS_PER_FIELD;
 
-        // Fréquence (Y) et Panoramique (X) basés sur le barycentre sécurisé
         const freq = 2500 - (((barycenterY - PADDING) / activeHeight) * (2500 - 150));
         const pan = ((barycenterX - PADDING) / activeWidth) * 2 - 1;
 
@@ -119,18 +166,18 @@ function initFields() {
             osc: null,
             gainNode: null,
             pannerNode: null,
-            movingAverage: 0 // Stockage du fond lumineux moyen à long terme
+            movingAverage: 0 
         });
     }
 }
 
 // --- 2. Initialisation du Web Audio ---
 function initAudio() {
+    if (audioCtx) return; // Évite de recréer le contexte audio si on change juste de caméra
+    
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
     const masterGain = audioCtx.createGain();
-    // Volume global adapté au nombre important d'oscillateurs simultanés
-    masterGain.gain.setValueAtTime(0.1 / NUM_FIELDS, audioCtx.currentTime);
+    masterGain.gain.setValueAtTime(0.1 / NUM_FIELDS, audioCtx.currentTime); 
     masterGain.connect(audioCtx.destination);
 
     fields.forEach(field => {
@@ -180,31 +227,18 @@ function processFrame() {
         });
 
         const currentIntensity = (totalIntensity / SENSORS_PER_FIELD) / 255;
-
-        // FILTRE DE MOUVEMENT AMÉLIORÉ :
-        // On met à jour une moyenne glissante très réactive (alpha = 0.05).
-        // Cela permet de lisser et d'absorber le "bruit" numérique de la caméra.
         field.movingAverage = 0.95 * field.movingAverage + 0.05 * currentIntensity;
-
-        // On calcule l'écart par rapport à cette moyenne stabilisée
         const netChange = Math.abs(currentIntensity - field.movingAverage);
 
         let finalVolume = 0;
-
-        // Si l'écart de luminosité franchit le seuil du bruit de capteur (0.015),
-        // alors il y a un vrai mouvement ou une variation lumineuse.
         if (netChange > 0.015 && currentIntensity > 0.1) {
-            // Le volume devient proportionnel à la dynamique du changement
             finalVolume = Math.min(1, netChange * 10) * currentIntensity;
         } else {
-            // Si c'est une image fixe ou un bord inactif, le son s'éteint complètement.
             finalVolume = 0;
         }
 
-        // Application avec une rampe douce pour éliminer les clics
         field.gainNode.gain.linearRampToValueAtTime(finalVolume, now + 0.05);
 
-        // Feedback visuel (le cercle rouge devient brillant uniquement s'il y a du son/mouvement)
         ctx.fillStyle = `rgba(255, 0, 0, ${0.05 + finalVolume * 0.95})`;
         ctx.beginPath();
         ctx.arc(field.barycenterX, field.barycenterY, 3, 0, Math.PI * 2);
@@ -214,30 +248,50 @@ function processFrame() {
     requestAnimationFrame(processFrame);
 }
 
-// --- 4. Démarrage de l'application ---
+// --- 4. Démarrage et changement de Caméra ---
 async function startApp() {
-    if (isRunning) return;
+    // Si un flux existe déjà, on le coupe proprement avant d'ouvrir la nouvelle caméra
+    if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+    }
+
+    const selectedDeviceId = cameraSelect.value;
+    
+    // Contraintes pour forcer la caméra choisie
+    const constraints = {
+        video: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : { facingMode: "environment" }
+    };
 
     try {
-        statusDiv.textContent = "Demande d'accès caméra...";
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: WIDTH, height: HEIGHT } });
-        video.srcObject = stream;
-
+        statusDiv.textContent = "Démarrage de la caméra choisie...";
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        
         video.onloadedmetadata = () => {
-            initFields();
+            // Initialise l'architecture des champs s'ils n'existent pas encore
+            if (fields.length === 0) initFields();
+            
             initAudio();
             isRunning = true;
-            statusDiv.textContent = "Application en cours d'exécution. Bougez devant la caméra !";
-            btnStart.style.display = 'none';
+            statusDiv.textContent = "Application en cours d'exécution. Bougez !";
+            btnStart.textContent = "Changer de Caméra"; // Le bouton permet maintenant de basculer si on change le select
             processFrame();
         };
     } catch (err) {
-        console.error("Erreur d'accès à la caméra ou à l'audio :", err);
-        statusDiv.textContent = "Erreur : Impossible d'accéder à la caméra.";
+        console.error("Erreur d'accès à la caméra sélectée :", err);
+        statusDiv.textContent = "Erreur : Impossible d'ouvrir cette caméra.";
     }
 }
 
+// Lier le bouton au démarrage / changement
 btnStart.addEventListener('click', startApp);
+
+// Si l'utilisateur change de caméra dans la liste déroulante et que l'appli tournait déjà, on relance automatiquement
+cameraSelect.addEventListener('change', () => {
+    if (isRunning) {
+        startApp();
+    }
+});
 </script>
 </body>
 </html>
